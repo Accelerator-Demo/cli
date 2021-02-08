@@ -8,7 +8,7 @@ import (
 )
 
 // repoCreateInput represents input parameters for repoCreate
-type repoCreateInput struct {
+type RepoCreateInput struct {
 	Name        string `json:"name"`
 	Visibility  string `json:"visibility"`
 	HomepageURL string `json:"homepageUrl,omitempty"`
@@ -31,7 +31,7 @@ type repoTemplateInput struct {
 }
 
 // repoCreate creates a new GitHub repository
-func repoCreate(client *http.Client, hostname string, input repoCreateInput, templateRepositoryID string) (*api.Repository, error) {
+func RepoCreate(client *http.Client, hostname string, input RepoCreateInput, templateRepositoryID string) (*api.Repository, error) {
 	apiClient := api.NewClientFromHTTP(client)
 
 	if input.TeamID != "" {

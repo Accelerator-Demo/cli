@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/cli/cli/internal/ghinstance"
 	"github.com/cli/cli/internal/ghrepo"
 	"github.com/shurcooL/githubv4"
 )
@@ -39,6 +41,13 @@ type Repository struct {
 
 	// pseudo-field that keeps track of host name of this repo
 	hostname string
+}
+
+type TemplateRepository struct {
+	NameWithOwner string
+	Description   string
+	IsTemplate    bool
+	Url           string
 }
 
 // RepositoryOwner is the owner of a GitHub repository
@@ -603,6 +612,136 @@ func RepoMetadata(client *Client, repo ghrepo.Interface, input RepoMetadataInput
 	}
 
 	return &result, err
+}
+
+type ResponseData struct {
+	Search struct {
+		RepositoryCount int
+		Nodes           []TemplateRepository
+	}
+}
+
+func QueryReposOnTopics(client *Client, repo ghrepo.Interface, topics []string) (*ResponseData, error) {
+	query := `
+	query QueryRepos($query: String!) {
+		search(query: $query, type: REPOSITORY, first: 100) {
+			repositoryCount
+			nodes {
+			  ... on Repository {
+				nameWithOwner
+				description
+				isTemplate
+				url
+			  }
+			}
+		}
+  }
+	`
+	const topicStr = "topic:"
+	var topic string
+
+	for i := 0; i < len(topics); i++ {
+		topic = topic + topicStr + topics[i] + " "
+	}
+
+	variables := map[string]interface{}{
+		"query": topic,
+	}
+
+	var response ResponseData
+
+	err := client.GraphQL(repo.RepoHost(), query, variables, &response)
+	if err != nil {
+		return nil, err
+	}
+
+	return &response, nil
+}
+
+type Entries struct {
+	Name   string
+	Object struct {
+		Text string
+	}
+}
+
+type Edges struct {
+	Node struct {
+		Object struct {
+			Entries []Entries
+		}
+	}
+}
+
+type FilesResponseData struct {
+	Search struct {
+		Edges []Edges
+	}
+}
+
+func FetchFilesInARepo(client *Client, repo ghrepo.Interface, repoName string) (*FilesResponseData, error) {
+	query := `
+	query GetFilesQuery($query: String!) {
+		search(first: 1, type: REPOSITORY, query: $query) {
+		   edges {
+			 node {
+			   ... on Repository {
+				 object(expression: "main:") {
+				   ... on Tree {
+					 entries {
+					   name
+					   object {
+						 ... on Blob {
+						   text
+						 }
+					   }
+					 }
+				   }
+				 }
+			   }
+			 }
+		   }
+		 }
+	   }
+	`
+	queryStr := "repo:" + repoName
+
+	variables := map[string]interface{}{
+		"query": queryStr,
+	}
+
+	var response FilesResponseData
+
+	err := client.GraphQL(repo.RepoHost(), query, variables, &response)
+	if err != nil {
+		return nil, err
+	}
+
+	return &response, nil
+}
+
+func (c Client) GetFileContents(baseRepo ghrepo.Interface, repoName string, filePath string) (io.ReadCloser, error) {
+	url := fmt.Sprintf("%srepos/%s/contents/%s",
+		ghinstance.RESTPrefix(baseRepo.RepoHost()), repoName, filePath)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("Accept", "application/vnd.github.v3.diff; charset=utf-8")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode == 404 {
+		return nil, &NotFoundError{errors.New("pull request not found")}
+	} else if resp.StatusCode != 200 {
+		return nil, HandleHTTPError(resp)
+	}
+
+	return resp.Body, nil
 }
 
 type RepoResolveInput struct {

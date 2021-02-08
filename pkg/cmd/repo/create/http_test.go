@@ -21,12 +21,12 @@ func Test_RepoCreate(t *testing.T) {
 			}),
 	)
 
-	input := repoCreateInput{
+	input := RepoCreateInput{
 		Description: "roasted chestnuts",
 		HomepageURL: "http://example.com",
 	}
 
-	_, err := repoCreate(httpClient, "github.com", input, "")
+	_, err := RepoCreate(httpClient, "github.com", input, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
