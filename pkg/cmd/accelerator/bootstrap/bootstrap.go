@@ -2,12 +2,14 @@ package bootstrap
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/MakeNowJust/heredoc"
@@ -31,15 +33,22 @@ type Vars struct {
 }
 
 type EnvVars struct {
-	ActionPath string `json:"actionPath"`
+	ActionPath string `json:"workflowPath"`
 	Variables  []Vars `json:"variables"`
 }
 
+type Workflow struct {
+	Path string `json:"path"`
+	Name string `json:"name"`
+	Ref  string `json:"ref"`
+}
+
 type Accelerator struct {
-	Name                 string    `json:"name"`
-	Description          string    `json:"description"`
-	EnvironmentVariables []EnvVars `json:"environmentVariables`
-	Secrets              []Vars    `json:"secrets"`
+	Name                 string     `json:"name"`
+	Description          string     `json:"description"`
+	EnvironmentVariables []EnvVars  `json:"variables"`
+	Secrets              []Vars     `json:"secrets"`
+	StartUpWorkflows     []Workflow `json:"startupWorkflows"`
 }
 
 type Inputs struct {
@@ -146,7 +155,29 @@ func bootstrapRun(opts *BootstrapOptions, f *cmdutil.Factory) error {
 		return err
 	}
 
-	inputVariables, err := getInputDetails(accelerator.EnvironmentVariables, false)
+	type InputVars struct {
+		WorkflowPath string
+		Inputs       []Inputs
+	}
+
+	//inputVariables := make([]InputVars, 0)
+
+	variablesMap := make(map[string]string)
+
+	for i := 0; i < len(accelerator.EnvironmentVariables); i++ {
+		fmt.Println("")
+		variableInputs, err := getInputDetails(accelerator.EnvironmentVariables[i].Variables, false)
+
+		if err != nil {
+			return err
+		}
+
+		for j := 0; j < len(variableInputs); j++ {
+			variablesMap[variableInputs[j].Name] = variableInputs[j].Value
+		}
+
+		//inputVariables = append(inputVariables, InputVars{WorkflowPath: accelerator.EnvironmentVariables[i].ActionPath, Inputs: variableInputs})
+	}
 
 	if err != nil {
 		return err
@@ -172,11 +203,16 @@ func bootstrapRun(opts *BootstrapOptions, f *cmdutil.Factory) error {
 	}
 
 	fmt.Printf("Generating a new repository %s based on the template %s", repoName, chosenRepoDetail[0])
+	fmt.Println("")
+
+	// Create new repository from the template
 
 	err = create.CreateRun(&repoInputOptions)
 	if err != nil {
 		return err
 	}
+
+	// Create secrets in that repository
 
 	for i := 0; i < len(inputSecrets); i++ {
 		secretCreateOptions := set.SetOptions{
@@ -194,6 +230,36 @@ func bootstrapRun(opts *BootstrapOptions, f *cmdutil.Factory) error {
 		if err != nil {
 			return err
 		}
+	}
+
+	// Should add polling logic here
+	time.Sleep(10 * time.Second)
+
+	httpClient, err := opts.HttpClient()
+	if err != nil {
+		return err
+	}
+
+	apiClient := api.NewClientFromHTTP(httpClient)
+	baseRepo, err := opts.BaseRepo()
+	if err != nil {
+		return err
+	}
+
+	//	Trigger the startup workflows
+
+	for i := 0; i < len(accelerator.StartUpWorkflows); i++ {
+		bodyStr := "{\"ref\":\"" + accelerator.StartUpWorkflows[i].Ref + "\"}"
+		body := bytes.NewBufferString(bodyStr)
+		path := fmt.Sprintf("repos/%s/actions/workflows/%s/dispatches", repoName, accelerator.StartUpWorkflows[i].Name)
+		fmt.Println("Triggering workflow " + accelerator.StartUpWorkflows[i].Name + " in " + repoName)
+		err = apiClient.REST(baseRepo.RepoHost(), "POST", path, body, nil)
+
+		if err != nil {
+			return err
+		}
+
+		fmt.Println("Triggered workflow " + accelerator.StartUpWorkflows[i].Name)
 	}
 
 	return nil
@@ -292,12 +358,12 @@ func getInputDetails(inputs []Vars, isPasswordInput bool) ([]Inputs, error) {
 
 		if isPasswordInput {
 			err = prompt.SurveyAskOne(&survey.Password{
-				Message: "Enter Value for Secret " + inputs[i].Name,
+				Message: inputs[i].Description,
 			}, &input, survey.WithValidator(survey.Required))
 		} else {
 			err = prompt.SurveyAskOne(&survey.Input{
 				Message: "Enter value for variable " + inputs[i].Name,
-			}, &input)
+			}, &input, survey.WithValidator(survey.Required))
 		}
 
 		if err != nil {
@@ -380,6 +446,5 @@ func getFileContentsResponse(fileContents io.Reader) (string, error) {
 			break
 		}
 	}
-
 	return content, nil
 }
