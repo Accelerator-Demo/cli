@@ -43,12 +43,23 @@ type Workflow struct {
 	Ref  string `json:"ref"`
 }
 
+type AcceleratorInputs struct {
+	EnvironmentVariables []Vars `json:"placeholders"`
+	Secrets              []Vars `json:"secrets"`
+}
+
+type RepositorySettings struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
 type Accelerator struct {
-	Name                 string     `json:"name"`
-	Description          string     `json:"description"`
-	EnvironmentVariables []EnvVars  `json:"variables"`
-	Secrets              []Vars     `json:"secrets"`
-	StartUpWorkflows     []Workflow `json:"startupWorkflows"`
+	Name             string               `json:"name"`
+	Description      string               `json:"description"`
+	Tags             []string             `json:"tags"`
+	Inputs           AcceleratorInputs    `json:"inputs"`
+	Settings         []RepositorySettings `json:"settings"`
+	StartUpWorkflows []Workflow           `json:"startupWorkflows"`
 }
 
 type Inputs struct {
@@ -149,7 +160,7 @@ func bootstrapRun(opts *BootstrapOptions, f *cmdutil.Factory) error {
 		return err
 	}
 
-	inputSecrets, err := getInputDetails(accelerator.Secrets, true)
+	inputSecrets, err := getInputDetails(accelerator.Inputs.Secrets, true)
 
 	if err != nil {
 		return err
@@ -164,24 +175,20 @@ func bootstrapRun(opts *BootstrapOptions, f *cmdutil.Factory) error {
 
 	variablesMap := make(map[string]string)
 
-	for i := 0; i < len(accelerator.EnvironmentVariables); i++ {
-		fmt.Println("")
-		variableInputs, err := getInputDetails(accelerator.EnvironmentVariables[i].Variables, false)
-
-		if err != nil {
-			return err
-		}
-
-		for j := 0; j < len(variableInputs); j++ {
-			variablesMap[variableInputs[j].Name] = variableInputs[j].Value
-		}
-
-		//inputVariables = append(inputVariables, InputVars{WorkflowPath: accelerator.EnvironmentVariables[i].ActionPath, Inputs: variableInputs})
-	}
+	//for i := 0; i < len(accelerator.Inputs.EnvironmentVariables); i++ {
+	fmt.Println("")
+	variableInputs, err := getInputDetails(accelerator.Inputs.EnvironmentVariables, false)
 
 	if err != nil {
 		return err
 	}
+
+	for j := 0; j < len(variableInputs); j++ {
+		variablesMap[variableInputs[j].Name] = variableInputs[j].Value
+	}
+
+	//inputVariables = append(inputVariables, InputVars{WorkflowPath: accelerator.EnvironmentVariables[i].ActionPath, Inputs: variableInputs})
+	//}
 
 	repoName, repoDescription, err := getNewRepoDetails()
 
