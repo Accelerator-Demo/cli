@@ -767,7 +767,7 @@ func (c Client) SendRequest(method string, url string, body io.Reader, accept st
 	return resp, nil
 }
 
-func UpdateRepo(c *Client, baseRepo ghrepo.Interface, repoName string) error {
+func UpdateRepo(c *Client, baseRepo ghrepo.Interface, repoName string, variablesMap map[string]string) error {
 	ref := "heads/main"
 	commitMessage := "Patched values in templates"
 
@@ -812,7 +812,7 @@ func UpdateRepo(c *Client, baseRepo ghrepo.Interface, repoName string) error {
 	}
 	json.Unmarshal(bodyBytes, &tree)
 	originalFiles := tree["tree"]
-	newFiles, err := GetUpdatedFiles(c, baseRepo, repoName, originalFiles)
+	newFiles, err := GetUpdatedFiles(c, baseRepo, repoName, originalFiles, variablesMap)
 	if err != nil {
 		return err
 	}
@@ -868,7 +868,7 @@ func UpdateRepo(c *Client, baseRepo ghrepo.Interface, repoName string) error {
 	return nil
 }
 
-func GetUpdatedFiles(c *Client, baseRepo ghrepo.Interface, repoName string, files interface{}) ([]Blobs, error) {
+func GetUpdatedFiles(c *Client, baseRepo ghrepo.Interface, repoName string, files interface{}, variablesMap map[string]string) ([]Blobs, error) {
 	fmt.Println("Patching the values in templates")
 	var newFiles []Blobs
 	filesArray := files.([]interface{})
@@ -902,8 +902,10 @@ func GetUpdatedFiles(c *Client, baseRepo ghrepo.Interface, repoName string, file
 			contentString := string(byteArray)
 			newContentString := reg.ReplaceAllStringFunc(contentString, func(s string) string {
 				key := reg.FindStringSubmatch(s)[1]
-				//replace the key with it's value if it exists, otherwise throw an error or return the key itself
-				return key
+				if val, isPresent := variablesMap[key]; isPresent {
+					return val
+				}
+				return s
 			})
 			// newContentString := reg.ReplaceAllString(contentString, GetValueFor("$1"))
 			var newFile Blobs
