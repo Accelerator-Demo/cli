@@ -291,6 +291,46 @@ func (c Client) REST(hostname string, method string, p string, body io.Reader, d
 	return nil
 }
 
+// For test purpose, Ideally find a way to add header.
+// REST performs a REST request and parses the response.
+func (c Client) REST_Test(hostname string, method string, p string, body io.Reader, data interface{}) error {
+	url := ghinstance.RESTPrefix(hostname) + p
+	req, err := http.NewRequest(method, url, body)
+	if err != nil {
+		return err
+	}
+
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	req.Header.Set("Accept", "application/vnd.github.dorian-preview+json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	success := resp.StatusCode >= 200 && resp.StatusCode < 300
+	if !success {
+		return HandleHTTPError(resp)
+	}
+
+	if resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+
+	b, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
+	err = json.Unmarshal(b, &data)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func handleResponse(resp *http.Response, data interface{}) error {
 	success := resp.StatusCode >= 200 && resp.StatusCode < 300
 

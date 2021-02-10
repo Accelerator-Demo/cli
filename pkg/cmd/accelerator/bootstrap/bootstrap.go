@@ -314,7 +314,7 @@ func getAcceleratorFileContents(baseTemplateRepo string, opts *BootstrapOptions)
 		return nil, err
 	}
 
-	fileResponse, err := api.FetchFilesInARepo(apiClient, baseRepo, "Sample-Ganes-Org/Nodejs-On-Azure-Accelerator")
+	fileResponse, err := api.FetchFilesInARepo(apiClient, baseRepo, baseTemplateRepo)
 
 	if err != nil {
 		return nil, err
@@ -395,11 +395,16 @@ func setRepoVulnerabilityAlerts(repoName string, opts *BootstrapOptions, enabled
 		method = "DELETE"
 	}
 
-	err = apiClient.REST(baseRepo.RepoHost(), method, path, nil, nil)
+	err = apiClient.REST_Test(baseRepo.RepoHost(), method, path, nil, nil)
 
 	if err != nil {
 		return err
 	}
+
+	if enabled {
+		fmt.Println("✓ Enabled vulnerability alerts for repo " + repoName)
+	}
+
 	return nil
 }
 
