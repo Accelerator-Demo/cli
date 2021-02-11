@@ -177,7 +177,10 @@ func bootstrapRun(opts *BootstrapOptions, f *cmdutil.Factory) error {
 		return err
 	}
 
-	inputSecrets, _ = addAzureCreds(inputSecrets)
+	// Add SPN creds only if Azure is chosen
+	if provider == 0 {
+		inputSecrets, _ = addAzureCreds(inputSecrets)
+	}
 
 	type InputVars struct {
 		WorkflowPath string
