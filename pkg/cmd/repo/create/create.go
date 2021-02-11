@@ -37,6 +37,7 @@ type CreateOptions struct {
 	Private       bool
 	Internal      bool
 	ConfirmSubmit bool
+	IsAccelerator bool
 }
 
 func NewCmdCreate(f *cmdutil.Factory, runF func(*CreateOptions) error) *cobra.Command {
@@ -90,7 +91,7 @@ func NewCmdCreate(f *cmdutil.Factory, runF func(*CreateOptions) error) *cobra.Co
 				return &cmdutil.FlagError{Err: errors.New(`The '--template' option is not supported with '--homepage, --team, --enable-issues or --enable-wiki'`)}
 			}
 
-			return createRun(opts)
+			return CreateRun(opts)
 		},
 	}
 
@@ -108,7 +109,7 @@ func NewCmdCreate(f *cmdutil.Factory, runF func(*CreateOptions) error) *cobra.Co
 	return cmd
 }
 
-func createRun(opts *CreateOptions) error {
+func CreateRun(opts *CreateOptions) error {
 	projectDir, projectDirErr := git.ToplevelDir()
 	isNameAnArg := false
 	isDescEmpty := opts.Description == ""
@@ -213,7 +214,7 @@ func createRun(opts *CreateOptions) error {
 		opts.Template = repo.ID
 	}
 
-	input := repoCreateInput{
+	input := RepoCreateInput{
 		Name:             repoToCreate.RepoName(),
 		Visibility:       visibility,
 		OwnerID:          repoToCreate.RepoOwner(),
@@ -238,7 +239,7 @@ func createRun(opts *CreateOptions) error {
 	}
 
 	if opts.ConfirmSubmit {
-		repo, err := repoCreate(httpClient, repoToCreate.RepoHost(), input, opts.Template)
+		repo, err := RepoCreate(httpClient, repoToCreate.RepoHost(), input, opts.Template)
 		if err != nil {
 			return err
 		}
@@ -254,67 +255,71 @@ func createRun(opts *CreateOptions) error {
 			fmt.Fprintln(stdout, repo.URL)
 		}
 
-		// TODO This is overly wordy and I'd like to streamline this.
-		cfg, err := opts.Config()
-		if err != nil {
-			return err
-		}
-		protocol, err := cfg.Get(repo.RepoHost(), "git_protocol")
-		if err != nil {
-			return err
-		}
-		remoteURL := ghrepo.FormatRemoteURL(repo, protocol)
-
-		if projectDirErr == nil {
-			_, err = git.AddRemote("origin", remoteURL)
+		if !opts.IsAccelerator {
+			// TODO This is overly wordy and I'd like to streamline this.
+			cfg, err := opts.Config()
 			if err != nil {
 				return err
 			}
-			if isTTY {
-				fmt.Fprintf(stderr, "%s Added remote %s\n", cs.SuccessIcon(), remoteURL)
+			protocol, err := cfg.Get(repo.RepoHost(), "git_protocol")
+			if err != nil {
+				return err
 			}
-		} else {
-			if opts.IO.CanPrompt() {
-				if !createLocalDirectory {
-					err := prompt.Confirm(fmt.Sprintf("Create a local project directory for %s?", ghrepo.FullName(repo)), &createLocalDirectory)
+			remoteURL := ghrepo.FormatRemoteURL(repo, protocol)
+
+			if projectDirErr == nil {
+				_, err = git.AddRemote("origin", remoteURL)
+				if err != nil {
+					return err
+				}
+				if isTTY {
+					fmt.Fprintf(stderr, "%s Added remote %s\n", cs.SuccessIcon(), remoteURL)
+				}
+			} else {
+				if opts.IO.CanPrompt() {
+					if !createLocalDirectory {
+						err := prompt.Confirm(fmt.Sprintf("Create a local project directory for %s?", ghrepo.FullName(repo)), &createLocalDirectory)
+						if err != nil {
+							return err
+						}
+					}
+				}
+				if createLocalDirectory {
+					path := repo.Name
+
+					gitInit, err := git.GitCommand("init", path)
 					if err != nil {
 						return err
 					}
+					isTTY := opts.IO.IsStdoutTTY()
+					if isTTY {
+						gitInit.Stdout = stdout
+					}
+					gitInit.Stderr = stderr
+					err = run.PrepareCmd(gitInit).Run()
+					if err != nil {
+						return err
+					}
+					gitRemoteAdd, err := git.GitCommand("-C", path, "remote", "add", "origin", remoteURL)
+					if err != nil {
+						return err
+					}
+					gitRemoteAdd.Stdout = stdout
+					gitRemoteAdd.Stderr = stderr
+					err = run.PrepareCmd(gitRemoteAdd).Run()
+					if err != nil {
+						return err
+					}
+					if isTTY {
+						fmt.Fprintf(stderr, "%s Initialized repository in './%s/'\n", cs.SuccessIcon(), path)
+					}
 				}
 			}
-			if createLocalDirectory {
-				path := repo.Name
 
-				gitInit, err := git.GitCommand("init", path)
-				if err != nil {
-					return err
-				}
-				isTTY := opts.IO.IsStdoutTTY()
-				if isTTY {
-					gitInit.Stdout = stdout
-				}
-				gitInit.Stderr = stderr
-				err = run.PrepareCmd(gitInit).Run()
-				if err != nil {
-					return err
-				}
-				gitRemoteAdd, err := git.GitCommand("-C", path, "remote", "add", "origin", remoteURL)
-				if err != nil {
-					return err
-				}
-				gitRemoteAdd.Stdout = stdout
-				gitRemoteAdd.Stderr = stderr
-				err = run.PrepareCmd(gitRemoteAdd).Run()
-				if err != nil {
-					return err
-				}
-				if isTTY {
-					fmt.Fprintf(stderr, "%s Initialized repository in './%s/'\n", cs.SuccessIcon(), path)
-				}
-			}
+			return nil
+		} else {
+			return nil
 		}
-
-		return nil
 	}
 	fmt.Fprintln(opts.IO.Out, "Discarding...")
 	return nil

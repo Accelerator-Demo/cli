@@ -7,6 +7,7 @@ import (
 	"github.com/cli/cli/api"
 	"github.com/cli/cli/context"
 	"github.com/cli/cli/internal/ghrepo"
+	acceleratorCmd "github.com/cli/cli/pkg/cmd/accelerator"
 	aliasCmd "github.com/cli/cli/pkg/cmd/alias"
 	apiCmd "github.com/cli/cli/pkg/cmd/api"
 	authCmd "github.com/cli/cli/pkg/cmd/auth"
@@ -72,6 +73,7 @@ func NewCmdRoot(f *cmdutil.Factory, version, buildDate string) *cobra.Command {
 	cmd.AddCommand(versionCmd.NewCmdVersion(f, version, buildDate))
 	cmd.AddCommand(aliasCmd.NewCmdAlias(f))
 	cmd.AddCommand(authCmd.NewCmdAuth(f))
+	cmd.AddCommand(acceleratorCmd.NewCmdAccelerator((f)))
 	cmd.AddCommand(configCmd.NewCmdConfig(f))
 	cmd.AddCommand(creditsCmd.NewCmdCredits(f, nil))
 	cmd.AddCommand(gistCmd.NewCmdGist(f))

@@ -3,14 +3,19 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"io/ioutil"
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/cli/cli/internal/ghinstance"
 	"github.com/cli/cli/internal/ghrepo"
 	"github.com/shurcooL/githubv4"
 )
@@ -39,6 +44,13 @@ type Repository struct {
 
 	// pseudo-field that keeps track of host name of this repo
 	hostname string
+}
+
+type TemplateRepository struct {
+	NameWithOwner string
+	Description   string
+	IsTemplate    bool
+	Url           string
 }
 
 // RepositoryOwner is the owner of a GitHub repository
@@ -603,6 +615,354 @@ func RepoMetadata(client *Client, repo ghrepo.Interface, input RepoMetadataInput
 	}
 
 	return &result, err
+}
+
+type ResponseData struct {
+	Search struct {
+		RepositoryCount int
+		Nodes           []TemplateRepository
+	}
+}
+
+func QueryReposOnTopics(client *Client, repo ghrepo.Interface, topics []string) (*ResponseData, error) {
+	query := `
+	query QueryRepos($query: String!) {
+		search(query: $query, type: REPOSITORY, first: 100) {
+			repositoryCount
+			nodes {
+			  ... on Repository {
+				nameWithOwner
+				description
+				isTemplate
+				url
+			  }
+			}
+		}
+  }
+	`
+	const topicStr = "topic:"
+	var topic string
+
+	for i := 0; i < len(topics); i++ {
+		topic = topic + topicStr + topics[i] + " "
+	}
+
+	variables := map[string]interface{}{
+		"query": topic,
+	}
+
+	var response ResponseData
+
+	err := client.GraphQL(repo.RepoHost(), query, variables, &response)
+	if err != nil {
+		return nil, err
+	}
+
+	return &response, nil
+}
+
+type Entries struct {
+	Name   string
+	Object struct {
+		Text string
+	}
+}
+
+type Edges struct {
+	Node struct {
+		Object struct {
+			Entries []Entries
+		}
+	}
+}
+
+type FilesResponseData struct {
+	Search struct {
+		Edges []Edges
+	}
+}
+
+func FetchFilesInARepo(client *Client, repo ghrepo.Interface, repoName string) (*FilesResponseData, error) {
+	query := `
+	query GetFilesQuery($query: String!) {
+		search(first: 1, type: REPOSITORY, query: $query) {
+		   edges {
+			 node {
+			   ... on Repository {
+				 object(expression: "main:") {
+				   ... on Tree {
+					 entries {
+					   name
+					   object {
+						 ... on Blob {
+						   text
+						 }
+					   }
+					 }
+				   }
+				 }
+			   }
+			 }
+		   }
+		 }
+	   }
+	`
+	queryStr := "repo:" + repoName
+
+	variables := map[string]interface{}{
+		"query": queryStr,
+	}
+
+	var response FilesResponseData
+
+	err := client.GraphQL(repo.RepoHost(), query, variables, &response)
+	if err != nil {
+		return nil, err
+	}
+
+	return &response, nil
+}
+
+func (c Client) SendRequest(method string, url string, body io.Reader, accept string) (*http.Response, error) {
+	req, err := http.NewRequest(method, url, body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("Accept", accept)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, HandleHTTPError(resp)
+	}
+
+	return resp, nil
+}
+
+func GetLatestCommitSha(c *Client, baseRepo ghrepo.Interface, repoName, ref string) (string, error) {
+	//get latest commit sha on heads/master, keep polling until there is a commit
+	resp, err := c.SendRequest("GET", fmt.Sprintf("%srepos/%s/git/ref/%s",
+		ghinstance.RESTPrefix(baseRepo.RepoHost()), repoName, ref), nil, "application/vnd.github.v3+json")
+	for err != nil {
+		resp, err = c.SendRequest("GET", fmt.Sprintf("%srepos/%s/git/ref/%s",
+			ghinstance.RESTPrefix(baseRepo.RepoHost()), repoName, ref), nil, "application/vnd.github.v3+json")
+		time.Sleep(1 * time.Second)
+	}
+	var headRef map[string]interface{}
+	bodyBytes, err := ioutil.ReadAll(resp.Body)
+	json.Unmarshal(bodyBytes, &headRef)
+	latestCommitSha := headRef["object"].(map[string]interface{})["sha"].(string)
+
+	return latestCommitSha, nil
+}
+
+func GetLatestTreeSha(c *Client, baseRepo ghrepo.Interface, repoName string, latestCommitSha string) (interface{}, error) {
+	//get latest tree from commit sha
+	resp, err := c.SendRequest("GET", fmt.Sprintf("%srepos/%s/git/commits/%s",
+		ghinstance.RESTPrefix(baseRepo.RepoHost()), repoName, latestCommitSha), nil, "application/vnd.github.v3+json")
+	if err != nil {
+		return nil, err
+	}
+	var latestCommit map[string]interface{}
+	bodyBytes, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	json.Unmarshal(bodyBytes, &latestCommit)
+	latestTreeSha := latestCommit["tree"].(map[string]interface{})["sha"]
+
+	return latestTreeSha, nil
+}
+
+func GetRepoFiles(c *Client, baseRepo ghrepo.Interface, repoName string, ref string) (interface{}, interface{}, string, error) {
+	latestCommitSha, err := GetLatestCommitSha(c, baseRepo, repoName, ref)
+	if err != nil {
+		return nil, nil, "", err
+	}
+
+	latestTreeSha, err := GetLatestTreeSha(c, baseRepo, repoName, latestCommitSha)
+	if err != nil {
+		return nil, nil, "", err
+	}
+
+	//get latest tree
+	resp, err := c.SendRequest("GET", fmt.Sprintf("%srepos/%s/git/trees/%s?recursive=true",
+		ghinstance.RESTPrefix(baseRepo.RepoHost()), repoName, latestTreeSha), nil, "application/vnd.github.v3+json")
+	if err != nil {
+		return nil, nil, "", err
+	}
+	var tree map[string]interface{}
+	bodyBytes, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	json.Unmarshal(bodyBytes, &tree)
+	originalFiles := tree["tree"]
+
+	return originalFiles, latestTreeSha, latestCommitSha, nil
+}
+
+func CommitFilesToRepo(c *Client, baseRepo ghrepo.Interface, repoName string, files []Blobs, latestTreeSha interface{}, latestCommitSha string, commitMessage string, ref string) error {
+	var treeParams TreeParams
+	treeParams.Blobs = files
+	treeParams.BaseTree = latestTreeSha.(string)
+	treeParamsBytes, _ := json.Marshal(treeParams)
+	treeParamsReader := bytes.NewReader(treeParamsBytes)
+	resp, err := c.SendRequest("POST", fmt.Sprintf("%srepos/%s/git/trees",
+		ghinstance.RESTPrefix(baseRepo.RepoHost()), repoName), treeParamsReader, "application/vnd.github.v3+json")
+	if err != nil {
+		return err
+	}
+	var newTree map[string]interface{}
+	bodyBytes, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	json.Unmarshal(bodyBytes, &newTree)
+	newTreeSha := newTree["sha"].(string)
+
+	//create a commit with new tree
+	var commitParams CommitParams
+	commitParams.Message = commitMessage
+	commitParams.TreeSha = newTreeSha
+	commitParams.Parents = []string{latestCommitSha}
+	commitParamsBytes, _ := json.Marshal(commitParams)
+	commitParamsReader := bytes.NewReader(commitParamsBytes)
+	resp, err = c.SendRequest("POST", fmt.Sprintf("%srepos/%s/git/commits",
+		ghinstance.RESTPrefix(baseRepo.RepoHost()), repoName), commitParamsReader, "application/vnd.github.v3+json")
+	if err != nil {
+		return err
+	}
+	var newCommit map[string]interface{}
+	bodyBytes, err = ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	json.Unmarshal(bodyBytes, &newCommit)
+
+	//update current ref
+	newCommitSha := newCommit["sha"].(string)
+	var refParams RefParams
+	refParams.CommitSha = newCommitSha
+	refParamsBytes, _ := json.Marshal(refParams)
+	refParamsReader := bytes.NewReader(refParamsBytes)
+	resp, err = c.SendRequest("PATCH", fmt.Sprintf("%srepos/%s/git/refs/%s",
+		ghinstance.RESTPrefix(baseRepo.RepoHost()), repoName, ref), refParamsReader, "application/vnd.github.v3+json")
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func UpdateRepo(c *Client, baseRepo ghrepo.Interface, repoName string, variablesMap map[string]string) error {
+	ref := "heads/main"
+	commitMessage := "Patched values in templates"
+	originalFiles, latestTreeSha, latestCommitSha, err := GetRepoFiles(c, baseRepo, repoName, ref)
+	if err != nil {
+		return err
+	}
+	newFiles, err := GetUpdatedFiles(c, baseRepo, repoName, originalFiles, variablesMap)
+	if err != nil {
+		return err
+	}
+
+	err = CommitFilesToRepo(c, baseRepo, repoName, newFiles, latestTreeSha, latestCommitSha, commitMessage, ref)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func GetFileContents(c *Client, baseRepo ghrepo.Interface, repoName, fileSha interface{}) (string, error) {
+	resp, err := c.SendRequest("GET", fmt.Sprintf("%srepos/%s/git/blobs/%s",
+		ghinstance.RESTPrefix(baseRepo.RepoHost()), repoName, fileSha), nil, "application/vnd.github.v3+json")
+	if err != nil {
+		return "", err
+	}
+	var fileContent map[string]interface{}
+	bodyBytes, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	json.Unmarshal(bodyBytes, &fileContent)
+	byteArray, err := base64.StdEncoding.DecodeString(fileContent["content"].(string))
+	if err != nil {
+		return "", err
+	}
+	return string(byteArray), nil
+}
+
+func GetUpdatedFiles(c *Client, baseRepo ghrepo.Interface, repoName string, files interface{}, variablesMap map[string]string) ([]Blobs, error) {
+	fmt.Println("Patching the values in templates")
+	var newFiles []Blobs
+	filesArray := files.([]interface{})
+	acceleratorFilePath := "accelerator.json"
+	reg, _ := regexp.Compile("\\${{\\s*acc\\.(\\w+)\\s*}}")
+	for _, value := range filesArray {
+		file := value.(map[string]interface{})
+		filePath := file["path"].(string)
+		fileMode := file["mode"].(string)
+		fileType := file["type"].(string)
+
+		if fileType == "blob" && filePath != acceleratorFilePath {
+			contentString, err := GetFileContents(c, baseRepo, repoName, file["sha"])
+
+			if err != nil {
+				return nil, err
+			}
+
+			newContentString := reg.ReplaceAllStringFunc(contentString, func(s string) string {
+				key := reg.FindStringSubmatch(s)[1]
+				if val, isPresent := variablesMap[key]; isPresent {
+					return val
+				}
+				return s
+			})
+			// newContentString := reg.ReplaceAllString(contentString, GetValueFor("$1"))
+			var newFile Blobs
+			newFile.FilePath = filePath
+			newFile.FileMode = fileMode
+			newFile.FileType = fileType
+			newFile.FileContent = newContentString
+
+			newFiles = append(newFiles, newFile)
+		}
+	}
+
+	return newFiles, nil
+}
+
+func GetValueFor(key string) string {
+	fmt.Println(key)
+	return key
+}
+
+type RefParams struct {
+	CommitSha string `json:"sha"`
+}
+
+type CommitParams struct {
+	Message string   `json:"message"`
+	TreeSha string   `json:"tree"`
+	Parents []string `json:"parents"`
+}
+
+type TreeParams struct {
+	Blobs    []Blobs `json:"tree"`
+	BaseTree string  `json:"base_tree"`
+}
+
+type Blobs struct {
+	FilePath    string `json:"path"`
+	FileMode    string `json:"mode"`
+	FileType    string `json:"type"`
+	FileContent string `json:"content"`
 }
 
 type RepoResolveInput struct {

@@ -193,7 +193,7 @@ func Test_setRun_repo(t *testing.T) {
 		RandomOverride: bytes.NewReader([]byte{5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5}),
 	}
 
-	err := setRun(opts)
+	err := SetRun(opts)
 	assert.NoError(t, err)
 
 	reg.Verify(t)
@@ -265,7 +265,7 @@ func Test_setRun_org(t *testing.T) {
 			// Cribbed from https://github.com/golang/crypto/commit/becbf705a91575484002d598f87d74f0002801e7
 			tt.opts.RandomOverride = bytes.NewReader([]byte{5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5})
 
-			err := setRun(tt.opts)
+			err := SetRun(tt.opts)
 			assert.NoError(t, err)
 
 			reg.Verify(t)

@@ -101,7 +101,7 @@ func NewCmdSet(f *cmdutil.Factory, runF func(*SetOptions) error) *cobra.Command 
 				return runF(opts)
 			}
 
-			return setRun(opts)
+			return SetRun(opts)
 		},
 	}
 	cmd.Flags().StringVarP(&opts.OrgName, "org", "o", "", "List secrets for an organization")
@@ -112,7 +112,7 @@ func NewCmdSet(f *cmdutil.Factory, runF func(*SetOptions) error) *cobra.Command 
 	return cmd
 }
 
-func setRun(opts *SetOptions) error {
+func SetRun(opts *SetOptions) error {
 	body, err := getBody(opts)
 	if err != nil {
 		return fmt.Errorf("did not understand secret body: %w", err)
