@@ -560,10 +560,20 @@ func addDotGitHubRepoContents(apiClient *api.Client, baseRepo ghrepo.Interface, 
 	sourceRepoName := orgName + "/.github"
 	ref := "heads/main"
 
+	isDotGitHubRepoPresent := api.IsRepoPresent(apiClient, baseRepo, sourceRepoName)
+
+	if !isDotGitHubRepoPresent {
+		fmt.Println("Your organisation doesn't contain a .github repository")
+		return nil
+	}
+
 	targetCommitMessage := "Adding files from .github repository of your organisation"
 
 	fmt.Println("Fetching all the contents from " + sourceRepoName + ".This might take a while..")
 	files, treeSha, commitSha, err := api.GetRepoFiles(apiClient, baseRepo, sourceRepoName, ref)
+	if err != nil {
+		return err
+	}
 	newFiles := make([]api.Blobs, 0)
 	filesArray := files.([]interface{})
 	for _, value := range filesArray {
