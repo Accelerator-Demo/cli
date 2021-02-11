@@ -238,6 +238,13 @@ func bootstrapRun(opts *BootstrapOptions, f *cmdutil.Factory) error {
 		}
 	}
 
+	// Update repo settings
+	err = setRepoSettings(repoName, opts, accelerator.Settings)
+
+	if err != nil {
+		return err
+	}
+
 	httpClient, err := opts.HttpClient()
 	if err != nil {
 		return err
@@ -365,6 +372,54 @@ func getAcceleratorFileContents(baseTemplateRepo string, opts *BootstrapOptions)
 	// fmt.Println(parsedFileResponse)
 
 	return &accelerator, nil
+}
+
+func setRepoSettings(repoName string, opts *BootstrapOptions, settings []RepositorySettings) error {
+
+	if len(settings) == 0 {
+		return nil
+	}
+
+	var err error
+	// For now lets just check for vulnerability alerts only
+	var vulSetting = settings[0]
+
+	if vulSetting.Name == "vulnerability_alerts" && vulSetting.Value == "enabled" {
+		err = setRepoVulnerabilityAlerts(repoName, opts, true)
+	}
+
+	return err
+}
+
+func setRepoVulnerabilityAlerts(repoName string, opts *BootstrapOptions, enabled bool) error {
+	httpClient, err := opts.HttpClient()
+	if err != nil {
+		return err
+	}
+	baseRepo, err := opts.BaseRepo()
+
+	apiClient := api.NewClientFromHTTP(httpClient)
+
+	path := fmt.Sprintf("repos/%s/vulnerability-alerts", repoName)
+
+	var method string
+	if enabled {
+		method = "PUT"
+	} else {
+		method = "DELETE"
+	}
+
+	err = apiClient.REST_Test(baseRepo.RepoHost(), method, path, nil, nil)
+
+	if err != nil {
+		return err
+	}
+
+	if enabled {
+		fmt.Println("✓ Enabled vulnerability alerts for repo " + repoName)
+	}
+
+	return nil
 }
 
 func toLowercaseAndRemoveWhiteSpace(str string) string {
