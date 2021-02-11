@@ -898,6 +898,15 @@ func GetFileContents(c *Client, baseRepo ghrepo.Interface, repoName, fileSha int
 	return string(byteArray), nil
 }
 
+func IsRepoPresent(c *Client, baseRepo ghrepo.Interface, repoName string) bool {
+	_, err := c.SendRequest("GET", fmt.Sprintf("%srepos/%s",
+		ghinstance.RESTPrefix(baseRepo.RepoHost()), repoName), nil, "application/vnd.github.v3+json")
+	if err != nil {
+		return false
+	}
+	return true
+}
+
 func GetUpdatedFiles(c *Client, baseRepo ghrepo.Interface, repoName string, files interface{}, variablesMap map[string]string) ([]Blobs, error) {
 	fmt.Println("Patching the values in templates")
 	var newFiles []Blobs
