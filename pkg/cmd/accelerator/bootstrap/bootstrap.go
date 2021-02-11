@@ -93,6 +93,17 @@ func NewCmdBootstrap(f *cmdutil.Factory, runF func(*BootstrapOptions) error) *co
 }
 
 func bootstrapRun(opts *BootstrapOptions, f *cmdutil.Factory) error {
+	httpClient, err := opts.HttpClient()
+	if err != nil {
+		return err
+	}
+
+	apiClient := api.NewClientFromHTTP(httpClient)
+	baseRepo, err := opts.BaseRepo()
+	if err != nil {
+		return err
+	}
+
 	languages := make([]string, 0)
 	providers := make([]string, 0)
 	targets := make([]string, 0)
@@ -189,7 +200,8 @@ func bootstrapRun(opts *BootstrapOptions, f *cmdutil.Factory) error {
 	//inputVariables = append(inputVariables, InputVars{WorkflowPath: accelerator.EnvironmentVariables[i].ActionPath, Inputs: variableInputs})
 	//}
 
-	repoName, repoDescription, err := getNewRepoDetails()
+	orgName, repoNameWithoutOrg, repoDescription, err := getNewRepoDetails()
+	repoName := orgName + "/" + repoNameWithoutOrg
 
 	if err != nil {
 		return err
@@ -245,17 +257,6 @@ func bootstrapRun(opts *BootstrapOptions, f *cmdutil.Factory) error {
 		return err
 	}
 
-	httpClient, err := opts.HttpClient()
-	if err != nil {
-		return err
-	}
-
-	apiClient := api.NewClientFromHTTP(httpClient)
-	baseRepo, err := opts.BaseRepo()
-	if err != nil {
-		return err
-	}
-
 	// Parse the repo to substitute the variables
 
 	err = api.UpdateRepo(apiClient, baseRepo, repoName, variablesMap)
@@ -263,6 +264,10 @@ func bootstrapRun(opts *BootstrapOptions, f *cmdutil.Factory) error {
 	if err != nil {
 		return err
 	}
+
+	// Add .github repo's contents into this repo which is enforced by the organisation
+
+	err = addDotGitHubRepoContents(apiClient, baseRepo, orgName, repoName)
 
 	//	Trigger the startup workflows based on user's input
 
@@ -452,7 +457,7 @@ func getInputDetails(inputs []Vars, isPasswordInput bool) ([]Inputs, error) {
 	return userInputValues, nil
 }
 
-func getNewRepoDetails() (string, string, error) {
+func getNewRepoDetails() (string, string, string, error) {
 	qs := []*survey.Question{}
 
 	orgNameQuestion := &survey.Question{
@@ -488,10 +493,10 @@ func getNewRepoDetails() (string, string, error) {
 	err := prompt.SurveyAsk(qs, &answers)
 
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 
-	return answers.OrgName + "/" + answers.RepoName, answers.RepoDescription, nil
+	return answers.OrgName, answers.RepoName, answers.RepoDescription, nil
 }
 
 func getFileContentsResponse(fileContents io.Reader) (string, error) {
@@ -549,4 +554,57 @@ func confirmWorkflowRunTrigger() (bool, error) {
 	}
 
 	return answer.ConfirmSubmit, nil
+}
+
+func addDotGitHubRepoContents(apiClient *api.Client, baseRepo ghrepo.Interface, orgName string, targetRepoName string) error {
+	sourceRepoName := orgName + "/.github"
+	ref := "heads/main"
+
+	targetCommitMessage := "Adding files from .github repository of your organisation"
+
+	fmt.Println("Fetching all the contents from " + sourceRepoName + ".This might take a while..")
+	files, treeSha, commitSha, err := api.GetRepoFiles(apiClient, baseRepo, sourceRepoName, ref)
+	newFiles := make([]api.Blobs, 0)
+	filesArray := files.([]interface{})
+	for _, value := range filesArray {
+		file := value.(map[string]interface{})
+		filePath := file["path"].(string)
+		fileMode := file["mode"].(string)
+		fileType := file["type"].(string)
+
+		if fileType == "blob" && strings.Contains(filePath, ".github/workflows/") {
+			contentString, err := api.GetFileContents(apiClient, baseRepo, sourceRepoName, file["sha"])
+
+			if err != nil {
+				return err
+			}
+			var newFile api.Blobs
+			newFile.FilePath = filePath
+			newFile.FileMode = fileMode
+			newFile.FileType = fileType
+			newFile.FileContent = contentString
+
+			newFiles = append(newFiles, newFile)
+		}
+	}
+
+	fmt.Println("Fetched all contents from " + sourceRepoName)
+
+	commitSha, err = api.GetLatestCommitSha(apiClient, baseRepo, targetRepoName, ref)
+	if err != nil {
+		return err
+	}
+
+	treeSha, err = api.GetLatestTreeSha(apiClient, baseRepo, targetRepoName, commitSha)
+	if err != nil {
+		return err
+	}
+
+	fmt.Println("Committing all the contents to " + targetRepoName)
+
+	err = api.CommitFilesToRepo(apiClient, baseRepo, targetRepoName, newFiles, treeSha, commitSha, targetCommitMessage, ref)
+	if err != nil {
+		return err
+	}
+	return nil
 }

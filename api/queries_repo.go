@@ -743,10 +743,7 @@ func (c Client) SendRequest(method string, url string, body io.Reader, accept st
 	return resp, nil
 }
 
-func UpdateRepo(c *Client, baseRepo ghrepo.Interface, repoName string, variablesMap map[string]string) error {
-	ref := "heads/main"
-	commitMessage := "Patched values in templates"
-
+func GetLatestCommitSha(c *Client, baseRepo ghrepo.Interface, repoName, ref string) (string, error) {
 	//get latest commit sha on heads/master, keep polling until there is a commit
 	resp, err := c.SendRequest("GET", fmt.Sprintf("%srepos/%s/git/ref/%s",
 		ghinstance.RESTPrefix(baseRepo.RepoHost()), repoName, ref), nil, "application/vnd.github.v3+json")
@@ -755,55 +752,73 @@ func UpdateRepo(c *Client, baseRepo ghrepo.Interface, repoName string, variables
 			ghinstance.RESTPrefix(baseRepo.RepoHost()), repoName, ref), nil, "application/vnd.github.v3+json")
 		time.Sleep(1 * time.Second)
 	}
-	fmt.Println(resp.StatusCode)
 	var headRef map[string]interface{}
 	bodyBytes, err := ioutil.ReadAll(resp.Body)
 	json.Unmarshal(bodyBytes, &headRef)
 	latestCommitSha := headRef["object"].(map[string]interface{})["sha"].(string)
 
+	return latestCommitSha, nil
+}
+
+func GetLatestTreeSha(c *Client, baseRepo ghrepo.Interface, repoName string, latestCommitSha string) (interface{}, error) {
 	//get latest tree from commit sha
-	resp, err = c.SendRequest("GET", fmt.Sprintf("%srepos/%s/git/commits/%s",
+	resp, err := c.SendRequest("GET", fmt.Sprintf("%srepos/%s/git/commits/%s",
 		ghinstance.RESTPrefix(baseRepo.RepoHost()), repoName, latestCommitSha), nil, "application/vnd.github.v3+json")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var latestCommit map[string]interface{}
-	bodyBytes, err = ioutil.ReadAll(resp.Body)
+	bodyBytes, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	json.Unmarshal(bodyBytes, &latestCommit)
 	latestTreeSha := latestCommit["tree"].(map[string]interface{})["sha"]
 
+	return latestTreeSha, nil
+}
+
+func GetRepoFiles(c *Client, baseRepo ghrepo.Interface, repoName string, ref string) (interface{}, interface{}, string, error) {
+	latestCommitSha, err := GetLatestCommitSha(c, baseRepo, repoName, ref)
+	if err != nil {
+		return nil, nil, "", err
+	}
+
+	latestTreeSha, err := GetLatestTreeSha(c, baseRepo, repoName, latestCommitSha)
+	if err != nil {
+		return nil, nil, "", err
+	}
+
 	//get latest tree
-	resp, err = c.SendRequest("GET", fmt.Sprintf("%srepos/%s/git/trees/%s?recursive=true",
+	resp, err := c.SendRequest("GET", fmt.Sprintf("%srepos/%s/git/trees/%s?recursive=true",
 		ghinstance.RESTPrefix(baseRepo.RepoHost()), repoName, latestTreeSha), nil, "application/vnd.github.v3+json")
 	if err != nil {
-		return err
+		return nil, nil, "", err
 	}
 	var tree map[string]interface{}
-	bodyBytes, err = ioutil.ReadAll(resp.Body)
+	bodyBytes, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		return nil, nil, "", err
 	}
 	json.Unmarshal(bodyBytes, &tree)
 	originalFiles := tree["tree"]
-	newFiles, err := GetUpdatedFiles(c, baseRepo, repoName, originalFiles, variablesMap)
-	if err != nil {
-		return err
-	}
+
+	return originalFiles, latestTreeSha, latestCommitSha, nil
+}
+
+func CommitFilesToRepo(c *Client, baseRepo ghrepo.Interface, repoName string, files []Blobs, latestTreeSha interface{}, latestCommitSha string, commitMessage string, ref string) error {
 	var treeParams TreeParams
-	treeParams.Blobs = newFiles
+	treeParams.Blobs = files
 	treeParams.BaseTree = latestTreeSha.(string)
 	treeParamsBytes, _ := json.Marshal(treeParams)
 	treeParamsReader := bytes.NewReader(treeParamsBytes)
-	resp, err = c.SendRequest("POST", fmt.Sprintf("%srepos/%s/git/trees",
+	resp, err := c.SendRequest("POST", fmt.Sprintf("%srepos/%s/git/trees",
 		ghinstance.RESTPrefix(baseRepo.RepoHost()), repoName), treeParamsReader, "application/vnd.github.v3+json")
 	if err != nil {
 		return err
 	}
 	var newTree map[string]interface{}
-	bodyBytes, err = ioutil.ReadAll(resp.Body)
+	bodyBytes, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		return err
 	}
@@ -844,6 +859,45 @@ func UpdateRepo(c *Client, baseRepo ghrepo.Interface, repoName string, variables
 	return nil
 }
 
+func UpdateRepo(c *Client, baseRepo ghrepo.Interface, repoName string, variablesMap map[string]string) error {
+	ref := "heads/main"
+	commitMessage := "Patched values in templates"
+	originalFiles, latestTreeSha, latestCommitSha, err := GetRepoFiles(c, baseRepo, repoName, ref)
+	if err != nil {
+		return err
+	}
+	newFiles, err := GetUpdatedFiles(c, baseRepo, repoName, originalFiles, variablesMap)
+	if err != nil {
+		return err
+	}
+
+	err = CommitFilesToRepo(c, baseRepo, repoName, newFiles, latestTreeSha, latestCommitSha, commitMessage, ref)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func GetFileContents(c *Client, baseRepo ghrepo.Interface, repoName, fileSha interface{}) (string, error) {
+	resp, err := c.SendRequest("GET", fmt.Sprintf("%srepos/%s/git/blobs/%s",
+		ghinstance.RESTPrefix(baseRepo.RepoHost()), repoName, fileSha), nil, "application/vnd.github.v3+json")
+	if err != nil {
+		return "", err
+	}
+	var fileContent map[string]interface{}
+	bodyBytes, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	json.Unmarshal(bodyBytes, &fileContent)
+	byteArray, err := base64.StdEncoding.DecodeString(fileContent["content"].(string))
+	if err != nil {
+		return "", err
+	}
+	return string(byteArray), nil
+}
+
 func GetUpdatedFiles(c *Client, baseRepo ghrepo.Interface, repoName string, files interface{}, variablesMap map[string]string) ([]Blobs, error) {
 	fmt.Println("Patching the values in templates")
 	var newFiles []Blobs
@@ -857,25 +911,12 @@ func GetUpdatedFiles(c *Client, baseRepo ghrepo.Interface, repoName string, file
 		fileType := file["type"].(string)
 
 		if fileType == "blob" && filePath != acceleratorFilePath {
+			contentString, err := GetFileContents(c, baseRepo, repoName, file["sha"])
 
-			fileSha := file["sha"]
+			if err != nil {
+				return nil, err
+			}
 
-			resp, err := c.SendRequest("GET", fmt.Sprintf("%srepos/%s/git/blobs/%s",
-				ghinstance.RESTPrefix(baseRepo.RepoHost()), repoName, fileSha), nil, "application/vnd.github.v3+json")
-			if err != nil {
-				return nil, err
-			}
-			var fileContent map[string]interface{}
-			bodyBytes, err := ioutil.ReadAll(resp.Body)
-			if err != nil {
-				return nil, err
-			}
-			json.Unmarshal(bodyBytes, &fileContent)
-			byteArray, err := base64.StdEncoding.DecodeString(fileContent["content"].(string))
-			if err != nil {
-				return nil, err
-			}
-			contentString := string(byteArray)
 			newContentString := reg.ReplaceAllStringFunc(contentString, func(s string) string {
 				key := reg.FindStringSubmatch(s)[1]
 				if val, isPresent := variablesMap[key]; isPresent {
