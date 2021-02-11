@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/MakeNowJust/heredoc"
@@ -99,7 +98,7 @@ func bootstrapRun(opts *BootstrapOptions, f *cmdutil.Factory) error {
 	targets := make([]string, 0)
 
 	languages = append(languages, "Nodejs")
-	languages = append(languages, "ASP.NET")
+	languages = append(languages, "Nextjs")
 	languages = append(languages, "Java")
 
 	providers = append(providers, "Azure")
@@ -108,7 +107,7 @@ func bootstrapRun(opts *BootstrapOptions, f *cmdutil.Factory) error {
 
 	targets = append(targets, "Kubernetes")
 	targets = append(targets, "Function App")
-	targets = append(targets, "Web App")
+	targets = append(targets, "S3 Bucket")
 
 	var provider int
 	var language int
@@ -246,9 +245,6 @@ func bootstrapRun(opts *BootstrapOptions, f *cmdutil.Factory) error {
 		return err
 	}
 
-	// Should add polling logic here
-	time.Sleep(10 * time.Second)
-
 	httpClient, err := opts.HttpClient()
 	if err != nil {
 		return err
@@ -260,7 +256,25 @@ func bootstrapRun(opts *BootstrapOptions, f *cmdutil.Factory) error {
 		return err
 	}
 
-	//	Trigger the startup workflows
+	// Parse the repo to substitute the variables
+
+	err = api.UpdateRepo(apiClient, baseRepo, repoName, variablesMap)
+
+	if err != nil {
+		return err
+	}
+
+	//	Trigger the startup workflows based on user's input
+
+	shouldTriggerWorkflows, err := confirmWorkflowRunTrigger()
+
+	if err != nil {
+		return err
+	}
+
+	if !shouldTriggerWorkflows {
+		return nil
+	}
 
 	for i := 0; i < len(accelerator.StartUpWorkflows); i++ {
 		bodyStr := "{\"ref\":\"" + accelerator.StartUpWorkflows[i].Ref + "\"}"
@@ -509,4 +523,30 @@ func getFileContentsResponse(fileContents io.Reader) (string, error) {
 		}
 	}
 	return content, nil
+}
+
+func confirmWorkflowRunTrigger() (bool, error) {
+	qs := []*survey.Question{}
+
+	promptString := fmt.Sprintf("Trigger startup workflows as part of repository setup?")
+
+	confirmSubmitQuestion := &survey.Question{
+		Name: "confirmSubmit",
+		Prompt: &survey.Confirm{
+			Message: promptString,
+			Default: true,
+		},
+	}
+	qs = append(qs, confirmSubmitQuestion)
+
+	answer := struct {
+		ConfirmSubmit bool
+	}{}
+
+	err := prompt.SurveyAsk(qs, &answer)
+	if err != nil {
+		return false, err
+	}
+
+	return answer.ConfirmSubmit, nil
 }
