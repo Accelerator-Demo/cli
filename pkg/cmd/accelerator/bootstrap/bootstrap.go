@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os/exec"
 	"strings"
 
 	"github.com/AlecAivazis/survey/v2"
@@ -165,6 +166,8 @@ func bootstrapRun(opts *BootstrapOptions, f *cmdutil.Factory) error {
 		return err
 	}
 
+	inputSecrets, _ = addAzureCreds(inputSecrets)
+
 	type InputVars struct {
 		WorkflowPath string
 		Inputs       []Inputs
@@ -175,7 +178,7 @@ func bootstrapRun(opts *BootstrapOptions, f *cmdutil.Factory) error {
 	variablesMap := make(map[string]string)
 
 	//for i := 0; i < len(accelerator.Inputs.EnvironmentVariables); i++ {
-	fmt.Println("")
+	// fmt.Println("")
 	variableInputs, err := getInputDetails(accelerator.Inputs.EnvironmentVariables, false)
 
 	if err != nil {
@@ -284,6 +287,22 @@ func bootstrapRun(opts *BootstrapOptions, f *cmdutil.Factory) error {
 	}
 
 	return nil
+}
+
+func addAzureCreds(inputSecrets []Inputs) ([]Inputs, error) {
+	fmt.Println("Creating azure service principal")
+	out, err := exec.Command("az", "ad", "sp", "create-for-rbac", "--sdk-auth").Output()
+	if err != nil {
+		fmt.Println(fmt.Sprintf("Could not create azure service principal: %s", err))
+		return inputSecrets, err
+	}
+	fmt.Println("Successfully created azure service principal")
+	secretName := "AZURE_CREDENTIALS"
+	secretValue := string(out)
+
+	inputSecrets = append(inputSecrets, Inputs{Name: secretName, Value: secretValue})
+
+	return inputSecrets, nil
 }
 
 func fetchRepos(language string, provider string, target string, opts *BootstrapOptions) (*api.ResponseData, error) {
