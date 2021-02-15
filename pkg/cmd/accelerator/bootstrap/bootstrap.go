@@ -305,6 +305,13 @@ func bootstrapRun(opts *BootstrapOptions, f *cmdutil.Factory) error {
 }
 
 func addAzureCreds(inputSecrets []Inputs) ([]Inputs, error) {
+	fmt.Println("Logging into az cli")
+	_, err := exec.Command("az", "login").Output()
+	if err != nil {
+		fmt.Println(fmt.Sprintf("Could not login to az cli: %s", err))
+		return inputSecrets, err
+	}
+
 	fmt.Println("Creating azure service principal")
 	out, err := exec.Command("az", "ad", "sp", "create-for-rbac", "--sdk-auth").Output()
 	if err != nil {
